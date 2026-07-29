@@ -71,11 +71,12 @@ def getData(session, date_combinations):
     for combo in date_combinations:
         start_enc = urllib.parse.quote(combo["startDay"], safe='')
         final_enc = urllib.parse.quote(combo["endDay"], safe='')
-        area_id = combo['areaId']
+        area_ids = combo.get("areaIds") or [combo["areaId"]]
+        area_query = "&".join([f"frArea[]={aid}" for aid in area_ids])
 
         full_url = (
             f"{DATUM_BASE_URL}/venta_reporte_productos.php?"
-            f"{STATIC_PARAMS}&frArea[]={area_id}&frInicio={start_enc}&frFinal={final_enc}&{groups_query}"
+            f"{STATIC_PARAMS}&{area_query}&frInicio={start_enc}&frFinal={final_enc}&{groups_query}"
         )
 
         combo["fullUrl"] = full_url
@@ -163,24 +164,26 @@ def retry_failures(session, failures, max_rounds=3, base_delay=5.0):
 
     return recovered, pending
 
-def combinationsPerDay():
-    today = date.today()
-    start = date(2025, 1, 1)
-    combinations = []
+def combinationsPerDay(start=None, end=None):
+    if start is None:
+        start = date(2025, 1, 1)
+    if end is None:
+        end = date.today() - timedelta(days=1)
 
+    area_ids = [a["id"] for a in AREAS]
+    combinations = []
     current = start
-    while current <= today:
+    while current <= end:
         day_str = current.strftime("%d/%m/%Y")
         iso = current.isoformat()
 
-        for area in AREAS:
-            combinations.append({
-                "areaId": area["id"],
-                "areaName": area["name"],
-                "startDay": day_str,
-                "endDay": day_str,
-                "date": iso
-            })
+        combinations.append({
+            "areaIds": area_ids,            # <-- lista completa, clave PLURAL
+            "areaName": "Todas las áreas",  # solo para el log
+            "startDay": day_str,
+            "endDay": day_str,
+            "date": iso
+        })
 
         current += timedelta(days=1)
 

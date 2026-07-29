@@ -1,13 +1,12 @@
 import json
 from pathlib import Path
+from datetime import date, timedelta
 
 from scraper import (
-    login, combinationsPerMonth, getData,
-    scrape_combinations, retry_failures,
-    combinationsPerDay
+    login, getData, scrape_combinations,
+    retry_failures, combinationsPerDay
 )
-
-from postprocess import normalize_records
+from postprocess import normalize_file
 
 TEST_MODE = False
 OUTPUT_FILE = Path("ventas.jsonl")
@@ -21,19 +20,62 @@ def reset_outputs(*paths):
             print(f"Limpiado: {p}")
 
 
-def write_jsonl(path, records):
-    with open(path, "w", encoding="utf-8") as f:
+def last_covered_date(path):
+    """Fecha más reciente ya guardada en el jsonl, o None si no existe/está vacío."""
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    latest = None
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line).get("date")
+            except json.JSONDecodeError:
+                continue
+            if d:
+                d = date.fromisoformat(d)
+                if latest is None or d > latest:
+                    latest = d
+    return latest
+
+
+def append_jsonl(path, records):
+    with open(path, "a", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 def main():
-    reset_outputs(OUTPUT_FILE, FAILURES_FILE)
-
     session = login()
     if not session:
         return
-    combinations = getData(session, combinationsPerDay())
+
+    yesterday = date.today() - timedelta(days=1)
+
+    last = last_covered_date(OUTPUT_FILE)
+    if last is None:
+        start = date(2025, 1, 1)
+        print("No hay ventas.jsonl previo → extracción completa desde 2025-01-01.")
+    else:
+        start = last + timedelta(days=1)
+        print(f"Último día cubierto: {last.isoformat()}")
+
+    if start > yesterday:
+        print(f"Ya está actualizado hasta {yesterday.isoformat()}. Nada que extraer.")
+        # Aun así, limpiamos el archivo por si hay histórico sin normalizar.
+        if OUTPUT_FILE.exists():
+            total, cambios = normalize_file(OUTPUT_FILE)
+            print(f"Limpieza: {cambios}/{total} registros reasignados.")
+        return
+
+    print(f"Extrayendo del {start.isoformat()} al {yesterday.isoformat()}")
+
+    # Solo reiniciamos el archivo de fallidas; el de ventas se conserva y se apenda.
+    reset_outputs(FAILURES_FILE)
+
+    combinations = getData(session, combinationsPerDay(start, yesterday))
     records, failures = scrape_combinations(
         session, combinations, limit=1 if TEST_MODE else None
     )
@@ -43,14 +85,17 @@ def main():
         records.extend(recovered)
         print(f"Recuperados en reintentos: {len(recovered)} registros")
 
-    normalize_records(records)
-    write_jsonl(OUTPUT_FILE, records)
+    append_jsonl(OUTPUT_FILE, records)
 
-    total = len(combinations) if not TEST_MODE else 1
-    completadas = total - len(failures)
-    print(f"\nCobertura: {completadas}/{total} combinaciones "
-          f"({completadas / total * 100:.1f}%)")
-    print(f"Total: {len(records)} registros")
+    # Limpieza integrada: normaliza áreas de TODO el archivo (histórico + nuevo).
+    total, cambios = normalize_file(OUTPUT_FILE)
+    print(f"Limpieza: {cambios}/{total} registros reasignados por área.")
+
+    total_combos = len(combinations) if not TEST_MODE else 1
+    completadas = total_combos - len(failures)
+    print(f"\nCobertura: {completadas}/{total_combos} combinaciones "
+          f"({completadas / total_combos * 100:.1f}%)")
+    print(f"Nuevos registros añadidos: {len(records)}")
 
     if failures:
         with open(FAILURES_FILE, "w", encoding="utf-8") as f:

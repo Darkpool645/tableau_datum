@@ -14,7 +14,8 @@ AREAS = [
     { "id": 7, "name": "Hoyo 10" },
     { "id": 3, "name": "Mulligan" },
     { "id": 15, "name": "Servicio a Domicilio" },
-    { "id": 19, "name": "Callos de cortes" }
+    { "id": 19, "name": "Callos de cortes" },
+    { "id": 11, "name": "Sushi"}
 ]
 
 GROUP_IDS = [
