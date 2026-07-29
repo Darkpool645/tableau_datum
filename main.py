@@ -7,6 +7,8 @@ from scraper import (
     combinationsPerDay
 )
 
+from postprocess import normalize_records
+
 TEST_MODE = False
 OUTPUT_FILE = Path("ventas.jsonl")
 FAILURES_FILE = Path("fallidas.json")
@@ -31,7 +33,6 @@ def main():
     session = login()
     if not session:
         return
-    # combinations = getData(session, combinationsPerMonth())
     combinations = getData(session, combinationsPerDay())
     records, failures = scrape_combinations(
         session, combinations, limit=1 if TEST_MODE else None
@@ -42,6 +43,7 @@ def main():
         records.extend(recovered)
         print(f"Recuperados en reintentos: {len(recovered)} registros")
 
+    normalize_records(records)
     write_jsonl(OUTPUT_FILE, records)
 
     total = len(combinations) if not TEST_MODE else 1

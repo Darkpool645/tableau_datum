@@ -66,3 +66,17 @@ FIELDS = [
 
 NUM_COLS = len(FIELDS)
 NUMERIC = { "cantidad", "precio", "impuesto", "total", "costo", "margen", "utilidad" }
+
+AREA_MAP = {
+    "Callos" : "Callos de cortes",
+    "Carrito 1" : "Carrito 1",
+    "Carrito 2" : "Carrito 2",
+    "Hoyo 10" : "Hoyo 10",
+    "Sushi" : "Sushi",
+    "Mulligan" : "Mulligan",
+    "Vista" : "Restaurante Vista del Lago"
+}
+
+PROTECTED_AREAS = {
+    "Servicio a Domicilio"
+}
