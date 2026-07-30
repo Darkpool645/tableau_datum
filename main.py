@@ -7,6 +7,7 @@ from scraper import (
     retry_failures, combinationsPerDay
 )
 from postprocess import normalize_file
+from export_excel import json_to_excel
 
 TEST_MODE = False
 OUTPUT_FILE = Path("ventas.jsonl")
@@ -47,6 +48,17 @@ def append_jsonl(path, records):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def finalize():
+    """Normaliza áreas y genera el Excel. Se ejecuta haya o no datos nuevos."""
+    if not OUTPUT_FILE.exists():
+        return
+    total, cambios = normalize_file(OUTPUT_FILE)
+    print(f"Limpieza: {cambios}/{total} registros reasignados por área.")
+    n, path = json_to_excel(OUTPUT_FILE)
+    if path:
+        print(f"Excel generado: {path} ({n} registros)")
+
+
 def main():
     session = login()
     if not session:
@@ -64,10 +76,7 @@ def main():
 
     if start > yesterday:
         print(f"Ya está actualizado hasta {yesterday.isoformat()}. Nada que extraer.")
-        # Aun así, limpiamos el archivo por si hay histórico sin normalizar.
-        if OUTPUT_FILE.exists():
-            total, cambios = normalize_file(OUTPUT_FILE)
-            print(f"Limpieza: {cambios}/{total} registros reasignados.")
+        finalize()
         return
 
     print(f"Extrayendo del {start.isoformat()} al {yesterday.isoformat()}")
@@ -87,10 +96,6 @@ def main():
 
     append_jsonl(OUTPUT_FILE, records)
 
-    # Limpieza integrada: normaliza áreas de TODO el archivo (histórico + nuevo).
-    total, cambios = normalize_file(OUTPUT_FILE)
-    print(f"Limpieza: {cambios}/{total} registros reasignados por área.")
-
     total_combos = len(combinations) if not TEST_MODE else 1
     completadas = total_combos - len(failures)
     print(f"\nCobertura: {completadas}/{total_combos} combinaciones "
@@ -101,6 +106,8 @@ def main():
         with open(FAILURES_FILE, "w", encoding="utf-8") as f:
             json.dump(failures, f, ensure_ascii=False, indent=2)
         print(f"Quedaron {len(failures)} sin recuperar → {FAILURES_FILE}")
+
+    finalize()
 
 
 if __name__ == "__main__":
