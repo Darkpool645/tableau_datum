@@ -42,7 +42,7 @@ Variables requeridas en `.env`:
 | `DATUM_PASSWORD`  | Contraseña de acceso al sistema DATUM       |
 | `DATUM_BASE`      | URL base del sistema DATUM                  |
 
-Las áreas y grupos de productos a extraer se configuran en [config.py](config.py) (`AREAS` y `GROUP_IDS`).
+Las áreas y grupos de productos a extraer se configuran en [config.py](config.py) (`AREAS` y `TYPE_IDS`).
 
 ## Uso
 

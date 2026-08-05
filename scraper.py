@@ -6,8 +6,12 @@ import urllib.parse
 import time
 from datetime import date, timedelta
 
-from config import DATUM_USER, DATUM_PASSWORD, DATUM_BASE_URL, AREAS, GROUP_IDS, STATIC_PARAMS
+from config import (
+    DATUM_USER, DATUM_PASSWORD, DATUM_BASE_URL, AREAS,
+    STATIC_PARAMS, query_nodes, GROUP_FIELDS
+)
 from utils import is_clean_row, row_to_dict
+
 
 def login():
     session = requests.Session()
@@ -30,6 +34,7 @@ def login():
     except requests.exceptions.RequestException as e:
         print(f"Error al intentar iniciar sesion: {e}")
         return None
+
 
 def combinationsPerMonth():
     today = date.today()
@@ -60,28 +65,66 @@ def combinationsPerMonth():
 
     return combinations
 
+
+def _build_url(combo, node_id):
+    """Arma la URL del reporte para un combo (día/áreas) filtrando por un
+    único nodo de la jerarquía en frGrupos[]."""
+    start_enc = urllib.parse.quote(combo["startDay"], safe='')
+    final_enc = urllib.parse.quote(combo["endDay"], safe='')
+
+    area_ids = combo.get("areaIds") or [combo["areaId"]]
+    area_query = "&".join([f"frArea[]={aid}" for aid in area_ids])
+
+    # Antes: frGrupos[] llevaba TODA la lista. Ahora lleva UN nodo por consulta,
+    # así cada fila devuelta pertenece a ese grupo/subgrupo/sub-subgrupo.
+    groups_query = f"frGrupos[]={node_id}"
+
+    return (
+        f"{DATUM_BASE_URL}/venta_reporte_productos.php?"
+        f"{STATIC_PARAMS}&{area_query}&frInicio={start_enc}&frFinal={final_enc}&{groups_query}"
+    )
+
+
 def getData(session, date_combinations):
+    """Expande cada combo (día × todas las áreas) en un combo por NODO de la
+    jerarquía. A cada combo resultante se le adjunta:
+        - node_id
+        - grupo / subgrupo / sub_subgrupo  (para etiquetar las filas)
+        - fullUrl
+
+    Si un combo ya trae 'node_id' (caso de reintento), solo se le reconstruye
+    la URL sin volver a expandir.
+    """
     if not session:
         print("No hay una sesion activa. Abortando getData")
         return
 
-    print(f"Iniciando extraccion para {len(date_combinations)} combinaciones...")
-    groups_query = "&".join([f"frGrupos[]={gid}" for gid in GROUP_IDS])
+    nodes = query_nodes()
+    expanded = []
 
     for combo in date_combinations:
-        start_enc = urllib.parse.quote(combo["startDay"], safe='')
-        final_enc = urllib.parse.quote(combo["endDay"], safe='')
-        area_ids = combo.get("areaIds") or [combo["areaId"]]
-        area_query = "&".join([f"frArea[]={aid}" for aid in area_ids])
+        # --- Reintento: el combo ya está a nivel de nodo ---
+        if "node_id" in combo:
+            combo["fullUrl"] = _build_url(combo, combo["node_id"])
+            expanded.append(combo)
+            continue
 
-        full_url = (
-            f"{DATUM_BASE_URL}/venta_reporte_productos.php?"
-            f"{STATIC_PARAMS}&{area_query}&frInicio={start_enc}&frFinal={final_enc}&{groups_query}"
-        )
+        # --- Expansión normal: un combo por nodo ---
+        for node in nodes:
+            child = dict(combo)
+            child["node_id"] = node["id"]
+            child["grupo"] = node["grupo"]
+            child["subgrupo"] = node["subgrupo"]
+            child["sub_subgrupo"] = node["sub_subgrupo"]
+            child["nodeName"] = node["name"]
+            child["fullUrl"] = _build_url(child, node["id"])
+            expanded.append(child)
 
-        combo["fullUrl"] = full_url
+    print(f"Iniciando extraccion: {len(date_combinations)} días × "
+          f"{len(nodes)} nodos = {len(expanded)} consultas.")
 
-    return date_combinations
+    return expanded
+
 
 def extract_from_table(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -107,13 +150,15 @@ def extract_from_table(html_content):
 
     return records
 
+
 def scrape_combinations(session, combinations, limit=None, delay=1.0):
     target = combinations[:limit] if limit else combinations
     all_records = []
     failures = []
 
     for i, combo in enumerate(target, start=1):
-        tag = f"{combo['areaName']} | {combo['startDay']} - {combo['endDay']}"
+        tag = (f"{combo.get('nodeName', combo['node_id'])} "
+               f"[{combo.get('grupo','')}] | {combo['startDay']}")
         print(f"[{i}/{len(target)}] {tag}", end="...")
 
         try:
@@ -121,13 +166,17 @@ def scrape_combinations(session, combinations, limit=None, delay=1.0):
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
             print(f"ERROR: {e}")
-            failures.append({**{k: v for k, v in combo.items() if k != "fullUrl"}, "error": str(e)})
+            failures.append({**{k: v for k, v in combo.items() if k != "fullUrl"},
+                             "error": str(e)})
             continue
 
         records = extract_from_table(response.text)
 
+        # Etiquetamos cada fila con su fecha y su ruta en la jerarquía.
         for r in records:
             r["date"] = combo["date"]
+            for f in GROUP_FIELDS:
+                r[f] = combo.get(f, "")
 
         all_records.extend(records)
         print(f"{len(records)} registros")
@@ -136,11 +185,10 @@ def scrape_combinations(session, combinations, limit=None, delay=1.0):
             time.sleep(delay)
 
     if failures:
-        print(f"\n{len(failures)} combinaciones fallaron:")
-        for f in failures:
-            print(f" - {f['areaName']} {f['startDay']}: {f['error']}")
+        print(f"\n{len(failures)} consultas fallaron.")
 
     return all_records, failures
+
 
 def retry_failures(session, failures, max_rounds=3, base_delay=5.0):
     recovered = []
@@ -150,19 +198,20 @@ def retry_failures(session, failures, max_rounds=3, base_delay=5.0):
         if not pending:
             break
 
-        wait = base_delay * (2 ** (round_num - 1 ))
-        print(f'\n--- Reintento {round_num}/{max_rounds}:'
+        wait = base_delay * (2 ** (round_num - 1))
+        print(f'\n--- Reintento {round_num}/{max_rounds}: '
               f'{len(pending)} pendientes (esperando {wait:.0f}s) ---')
 
         time.sleep(wait)
 
-        combos = [{ k: v for k, v in f.items() if k != "error"} for f in pending]
+        combos = [{k: v for k, v in f.items() if k != "error"} for f in pending]
         combos = getData(session, combos)
 
         records, pending = scrape_combinations(session, combos, delay=2.0)
         recovered.extend(records)
 
     return recovered, pending
+
 
 def combinationsPerDay(start=None, end=None):
     if start is None:

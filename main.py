@@ -6,8 +6,9 @@ from scraper import (
     login, getData, scrape_combinations,
     retry_failures, combinationsPerDay
 )
-from postprocess import normalize_file
+from postprocess import normalize_file, dedupe_deepest
 from export_excel import json_to_excel
+from config import QUERY_STRATEGY
 
 TEST_MODE = False
 OUTPUT_FILE = Path("ventas.jsonl")
@@ -93,6 +94,13 @@ def main():
         recovered, failures = retry_failures(session, failures)
         records.extend(recovered)
         print(f"Recuperados en reintentos: {len(recovered)} registros")
+
+    # Con 'all_nodes' un producto puede venir del padre y del hijo: nos quedamos
+    # con la etiqueta más profunda. Con 'leaves' es un no-op.
+    if QUERY_STRATEGY == "all_nodes":
+        antes = len(records)
+        records = dedupe_deepest(records)
+        print(f"Dedup por profundidad: {antes} -> {len(records)} registros")
 
     append_jsonl(OUTPUT_FILE, records)
 

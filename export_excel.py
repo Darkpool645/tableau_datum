@@ -8,14 +8,17 @@ import pandas as pd
 # Límite de Excel es 1,048,576 filas por hoja; dejamos margen.
 MAX_ROWS = 1_000_000
 
-COLUMNS = ["date", "area", "tipo", "producto", "cantidad", "precio",
-           "impuesto", "total", "costo", "margen", "utilidad"]
+COLUMNS = ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "producto",
+           "cantidad", "precio", "impuesto", "total", "costo", "margen", "utilidad"]
 HEADERS = {
-    "date": "Fecha", "area": "Área", "tipo": "Tipo", "producto": "Producto",
+    "date": "Fecha", "area": "Área",
+    "grupo": "Grupo", "subgrupo": "Subgrupo", "sub_subgrupo": "Sub-subgrupo",
+    "tipo": "Tipo", "producto": "Producto",
     "cantidad": "Cantidad", "precio": "Precio", "impuesto": "Impuesto",
     "total": "Total", "costo": "Costo", "margen": "Margen", "utilidad": "Utilidad",
 }
-WIDTHS = {"Fecha": 12, "Área": 26, "Tipo": 28, "Producto": 34}
+WIDTHS = {"Fecha": 12, "Área": 26, "Grupo": 20, "Subgrupo": 22,
+          "Sub-subgrupo": 24, "Tipo": 28, "Producto": 34}
 MONEY_COLS = {"Precio", "Impuesto", "Total", "Costo", "Margen", "Utilidad"}
 MONEY_FMT = '$#,##0.00;[Red]-$#,##0.00'
 
@@ -46,7 +49,9 @@ def json_to_excel(jsonl_path, xlsx_path=None):
             df[c] = None
     df = df[COLUMNS]
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.sort_values(["date", "area", "tipo", "producto"]).reset_index(drop=True)
+    df = df.sort_values(
+        ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "producto"]
+    ).reset_index(drop=True)
 
     chunks = [df.iloc[i:i + MAX_ROWS] for i in range(0, len(df), MAX_ROWS)]
 
