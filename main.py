@@ -11,9 +11,17 @@ from export_excel import json_to_excel
 from config import QUERY_STRATEGY
 
 TEST_MODE = False
-OUTPUT_FILE = Path("ventas.jsonl")
-FAILURES_FILE = Path("fallidas.json")
 
+TEST_START = date(2025, 1, 1)
+TEST_END = date(2025,1, 3)
+
+
+if TEST_MODE:
+    OUTPUT_FILE = Path("ventas_test.jsonl")
+    FAILURES_FILE = Path("fallidas_test.json")
+else:
+    OUTPUT_FILE = Path("ventas.jsonl")
+    FAILURES_FILE = Path("fallidas.json")
 
 def reset_outputs(*paths):
     for p in paths:
@@ -65,38 +73,40 @@ def main():
     if not session:
         return
 
-    yesterday = date.today() - timedelta(days=1)
+    if TEST_MODE:
+        start, end = TEST_START, TEST_END
+        print(f"[TEST_MODE] Extracion completa de "
+              f"{start.isoformat()} a {end.isoformat()}")
 
-    last = last_covered_date(OUTPUT_FILE)
-    if last is None:
-        start = date(2025, 1, 1)
-        print("No hay ventas.jsonl previo → extracción completa desde 2025-01-01.")
+        reset_outputs(OUTPUT_FILE, FAILURES_FILE)
     else:
-        start = last + timedelta(days=1)
-        print(f"Último día cubierto: {last.isoformat()}")
+        end = date.today() - timedelta(days=1)
 
-    if start > yesterday:
-        print(f"Ya está actualizado hasta {yesterday.isoformat()}. Nada que extraer.")
-        finalize()
-        return
+        last = last_covered_date(OUTPUT_FILE)
+        if last is None:
+            start = date(2025, 1, 1)
+            print("No hay ventas.jsonl previo -> extraccion completa desde 2025-01-01")
+        else:
+            start = last + timedelta(days=1)
+            print(f"Ultimo dia cubierot: {last.isoformat()}")
 
-    print(f"Extrayendo del {start.isoformat()} al {yesterday.isoformat()}")
+        if start > end:
+            print("Ya esta actualizado hasta {end.isoformat()}. Nada que extraer.")
+            finalize()
+            return
 
-    # Solo reiniciamos el archivo de fallidas; el de ventas se conserva y se apenda.
-    reset_outputs(FAILURES_FILE)
+        reset_outputs(FAILURES_FILE)
 
-    combinations = getData(session, combinationsPerDay(start, yesterday))
-    records, failures = scrape_combinations(
-        session, combinations, limit=1 if TEST_MODE else None
-    )
+    print(f"Extrayendo del {start.isoformat()} al {end.isoformat()}")
+
+    combinations = getData(session, combinationsPerDay(start, end))
+    records, failures = scrape_combinations(session, combinations)
 
     if failures:
         recovered, failures = retry_failures(session, failures)
         records.extend(recovered)
         print(f"Recuperados en reintentos: {len(recovered)} registros")
 
-    # Con 'all_nodes' un producto puede venir del padre y del hijo: nos quedamos
-    # con la etiqueta más profunda. Con 'leaves' es un no-op.
     if QUERY_STRATEGY == "all_nodes":
         antes = len(records)
         records = dedupe_deepest(records)
@@ -104,19 +114,18 @@ def main():
 
     append_jsonl(OUTPUT_FILE, records)
 
-    total_combos = len(combinations) if not TEST_MODE else 1
+    total_combos = len(combinations)
     completadas = total_combos - len(failures)
-    print(f"\nCobertura: {completadas}/{total_combos} combinaciones "
-          f"({completadas / total_combos * 100:.1f}%)")
-    print(f"Nuevos registros añadidos: {len(records)}")
+    print(f"\nCobertura: {completadas}/{total_combos} combinaciones"
+          f"({completadas / total_combos * 100: .1f}%)")
+    print(f"Nuevos registros agregados: {len(records)}")
 
     if failures:
         with open(FAILURES_FILE, "w", encoding="utf-8") as f:
             json.dump(failures, f, ensure_ascii=False, indent=2)
-        print(f"Quedaron {len(failures)} sin recuperar → {FAILURES_FILE}")
+        print(f"Quedaron {len(failures)} sin recuperar -> {FAILURES_FILE}")
 
     finalize()
-
 
 if __name__ == "__main__":
     main()

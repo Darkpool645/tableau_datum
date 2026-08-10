@@ -1,5 +1,6 @@
 """Genera un Excel formateado a partir de ventas.jsonl (rápido, para archivos grandes)."""
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -8,19 +9,41 @@ import pandas as pd
 # Límite de Excel es 1,048,576 filas por hoja; dejamos margen.
 MAX_ROWS = 1_000_000
 
-COLUMNS = ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "producto",
+COLUMNS = ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "subtipo", "producto",
            "cantidad", "precio", "impuesto", "total", "costo", "margen", "utilidad"]
 HEADERS = {
     "date": "Fecha", "area": "Área",
     "grupo": "Grupo", "subgrupo": "Subgrupo", "sub_subgrupo": "Sub-subgrupo",
-    "tipo": "Tipo", "producto": "Producto",
+    "tipo": "Tipo", "subtipo": "Subtipo", "producto": "Producto",
     "cantidad": "Cantidad", "precio": "Precio", "impuesto": "Impuesto",
     "total": "Total", "costo": "Costo", "margen": "Margen", "utilidad": "Utilidad",
 }
 WIDTHS = {"Fecha": 12, "Área": 26, "Grupo": 20, "Subgrupo": 22,
-          "Sub-subgrupo": 24, "Tipo": 28, "Producto": 34}
+          "Sub-subgrupo": 24, "Tipo": 24, "Subtipo": 16, "Producto": 34}
 MONEY_COLS = {"Precio", "Impuesto", "Total", "Costo", "Margen", "Utilidad"}
 MONEY_FMT = '$#,##0.00;[Red]-$#,##0.00'
+
+# --- Separación de "Tipo" en "Tipo" + "Subtipo" -----------------------------
+# El scraper guarda cosas como "Carrito 1 Bebidas con alcohol",
+# "Mulligan Bebidas sin alcohol" o "Vista Alimentos". Aquí:
+#   - Si termina en "Bebidas con alcohol" / "Bebidas sin alcohol":
+#       tipo    -> "<Área> Bebidas"
+#       subtipo -> "Con alcohol" / "Sin alcohol"
+#   - Cualquier otro valor (Alimentos, Descuentos, Green Fees, Proshop,
+#     Tabaco, Renta Carrito, etc.) se deja igual y subtipo queda vacío.
+TIPO_SUBTIPO_PATTERN = re.compile(
+    r'^(.*\bBebidas)\s+(con alcohol|sin alcohol)$', re.IGNORECASE
+)
+
+
+def split_tipo_subtipo(tipo):
+    if tipo is None or (isinstance(tipo, float) and pd.isna(tipo)):
+        return tipo, None
+    m = TIPO_SUBTIPO_PATTERN.match(str(tipo).strip())
+    if m:
+        return m.group(1).strip(), m.group(2).strip().capitalize()
+    return tipo, None
+# -----------------------------------------------------------------------------
 
 
 def load_records(path):
@@ -44,13 +67,22 @@ def json_to_excel(jsonl_path, xlsx_path=None):
         print("El jsonl está vacío; no se generó Excel.")
         return 0, None
 
+    # Aseguramos que exista la columna "tipo" antes de separarla.
+    if "tipo" not in df.columns:
+        df["tipo"] = None
+
+    # Separación Tipo -> Tipo + Subtipo (no afecta al jsonl original, solo al export)
+    split_result = df["tipo"].apply(split_tipo_subtipo)
+    df["tipo"] = split_result.apply(lambda x: x[0])
+    df["subtipo"] = split_result.apply(lambda x: x[1])
+
     for c in COLUMNS:
         if c not in df.columns:
             df[c] = None
     df = df[COLUMNS]
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.sort_values(
-        ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "producto"]
+        ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "subtipo", "producto"]
     ).reset_index(drop=True)
 
     chunks = [df.iloc[i:i + MAX_ROWS] for i in range(0, len(df), MAX_ROWS)]
