@@ -9,6 +9,12 @@ import pandas as pd
 # Límite de Excel es 1,048,576 filas por hoja; dejamos margen.
 MAX_ROWS = 1_000_000
 
+# Catálogo producto -> {grupo, subgrupo, sub_subgrupo}, generado una sola vez
+# (o cuando cambie el menú) con build_catalog.py. Si no existe, esas tres
+# columnas quedan vacías; no bloquea la generación del Excel.
+CATALOG_FILE = Path(__file__).with_name("catalogo_productos.json")
+CATALOG_FIELDS = ["grupo", "subgrupo", "sub_subgrupo"]
+
 COLUMNS = ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "subtipo", "producto",
            "cantidad", "precio", "impuesto", "total", "costo", "margen", "utilidad"]
 HEADERS = {
@@ -18,8 +24,8 @@ HEADERS = {
     "cantidad": "Cantidad", "precio": "Precio", "impuesto": "Impuesto",
     "total": "Total", "costo": "Costo", "margen": "Margen", "utilidad": "Utilidad",
 }
-WIDTHS = {"Fecha": 12, "Área": 26, "Grupo": 20, "Subgrupo": 22,
-          "Sub-subgrupo": 24, "Tipo": 24, "Subtipo": 16, "Producto": 34}
+WIDTHS = {"Fecha": 12, "Área": 26, "Grupo": 20, "Subgrupo": 20, "Sub-subgrupo": 20,
+          "Tipo": 24, "Subtipo": 16, "Producto": 34}
 MONEY_COLS = {"Precio", "Impuesto", "Total", "Costo", "Margen", "Utilidad"}
 MONEY_FMT = '$#,##0.00;[Red]-$#,##0.00'
 
@@ -56,6 +62,18 @@ def load_records(path):
     return records
 
 
+def load_catalog(path=CATALOG_FILE):
+    """Carga catalogo_productos.json (producto en minúsculas -> categoría).
+    Si no existe, devuelve {} y las columnas de categoría quedan vacías."""
+    path = Path(path)
+    if not path.exists():
+        print(f"Aviso: no se encontró {path}; Grupo/Subgrupo/Sub-subgrupo "
+              f"quedarán vacíos. Corre build_catalog.py para generarlo.")
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def json_to_excel(jsonl_path, xlsx_path=None):
     jsonl_path = Path(jsonl_path)
     if xlsx_path is None:
@@ -76,13 +94,22 @@ def json_to_excel(jsonl_path, xlsx_path=None):
     df["tipo"] = split_result.apply(lambda x: x[0])
     df["subtipo"] = split_result.apply(lambda x: x[1])
 
+    # Grupo/Subgrupo/Sub-subgrupo: join local por producto contra el catálogo
+    # cacheado (build_catalog.py), no vuelve a consultar DATUM.
+    catalog = load_catalog()
+    if "producto" not in df.columns:
+        df["producto"] = None
+    keys = df["producto"].fillna("").astype(str).str.strip().str.lower()
+    for field in CATALOG_FIELDS:
+        df[field] = keys.map(lambda k: catalog.get(k, {}).get(field))
+
     for c in COLUMNS:
         if c not in df.columns:
             df[c] = None
     df = df[COLUMNS]
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.sort_values(
-        ["date", "area", "grupo", "subgrupo", "sub_subgrupo", "tipo", "subtipo", "producto"]
+        ["date", "area", "tipo", "subtipo", "producto"]
     ).reset_index(drop=True)
 
     chunks = [df.iloc[i:i + MAX_ROWS] for i in range(0, len(df), MAX_ROWS)]

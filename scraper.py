@@ -7,8 +7,7 @@ import time
 from datetime import date, timedelta
 
 from config import (
-    DATUM_USER, DATUM_PASSWORD, DATUM_BASE_URL, AREAS,
-    STATIC_PARAMS, query_nodes, GROUP_FIELDS
+    DATUM_USER, DATUM_PASSWORD, DATUM_BASE_URL, AREAS, STATIC_PARAMS
 )
 from utils import is_clean_row, row_to_dict
 
@@ -36,94 +35,48 @@ def login():
         return None
 
 
-def combinationsPerMonth():
-    today = date.today()
-    start_year = 2025
-    end_year = today.year
-    combinations = []
+def month_chunks(start, end):
+    """Divide [start, end] en tramos mensuales (recortados al rango real).
+    Sirve para procesar y persistir la extracción mes por mes sin perder el
+    detalle diario: dentro de cada tramo se sigue consultando día por día,
+    porque el reporte de DATUM agrega todo el rango pedido en una sola fila
+    por área/producto/tipo (no trae fecha por fila)."""
+    chunks = []
+    current = date(start.year, start.month, 1)
+    while current <= end:
+        last_day = calendar.monthrange(current.year, current.month)[1]
+        month_end = date(current.year, current.month, last_day)
+        chunks.append((max(start, current), min(end, month_end)))
+        current = date(current.year + 1, 1, 1) if current.month == 12 \
+            else date(current.year, current.month + 1, 1)
 
-    for year in range(start_year, end_year + 1):
-        max_month = today.month if year == end_year else 12
-
-        for month in range(1, max_month + 1):
-            start_day = f"01/{month:02d}/{year}"
-
-            if year == end_year and month == max_month:
-                last_day = today.day
-            else:
-                last_day = calendar.monthrange(year, month)[1]
-
-            end_day = f"{last_day:02d}/{month:02d}/{year}"
-
-            for area in AREAS:
-                combinations.append({
-                    "areaId": area["id"],
-                    "areaName": area["name"],
-                    "startDay": start_day,
-                    "endDay": end_day
-                })
-
-    return combinations
+    return chunks
 
 
-def _build_url(combo, node_id):
-    """Arma la URL del reporte para un combo (día/áreas) filtrando por un
-    único nodo de la jerarquía en frGrupos[]."""
+def _build_url(combo):
+    """Arma la URL del reporte para un combo (día/áreas)."""
     start_enc = urllib.parse.quote(combo["startDay"], safe='')
     final_enc = urllib.parse.quote(combo["endDay"], safe='')
 
     area_ids = combo.get("areaIds") or [combo["areaId"]]
     area_query = "&".join([f"frArea[]={aid}" for aid in area_ids])
 
-    # Antes: frGrupos[] llevaba TODA la lista. Ahora lleva UN nodo por consulta,
-    # así cada fila devuelta pertenece a ese grupo/subgrupo/sub-subgrupo.
-    groups_query = f"frGrupos[]={node_id}"
-
     return (
         f"{DATUM_BASE_URL}/venta_reporte_productos.php?"
-        f"{STATIC_PARAMS}&{area_query}&frInicio={start_enc}&frFinal={final_enc}&{groups_query}"
+        f"{STATIC_PARAMS}&{area_query}&frInicio={start_enc}&frFinal={final_enc}"
     )
 
 
 def getData(session, date_combinations):
-    """Expande cada combo (día × todas las áreas) en un combo por NODO de la
-    jerarquía. A cada combo resultante se le adjunta:
-        - node_id
-        - grupo / subgrupo / sub_subgrupo  (para etiquetar las filas)
-        - fullUrl
-
-    Si un combo ya trae 'node_id' (caso de reintento), solo se le reconstruye
-    la URL sin volver a expandir.
-    """
+    """Adjunta la URL completa a cada combo (día × todas las áreas)."""
     if not session:
         print("No hay una sesion activa. Abortando getData")
         return
 
-    nodes = query_nodes()
-    expanded = []
-
     for combo in date_combinations:
-        # --- Reintento: el combo ya está a nivel de nodo ---
-        if "node_id" in combo:
-            combo["fullUrl"] = _build_url(combo, combo["node_id"])
-            expanded.append(combo)
-            continue
+        combo["fullUrl"] = _build_url(combo)
 
-        # --- Expansión normal: un combo por nodo ---
-        for node in nodes:
-            child = dict(combo)
-            child["node_id"] = node["id"]
-            child["grupo"] = node["grupo"]
-            child["subgrupo"] = node["subgrupo"]
-            child["sub_subgrupo"] = node["sub_subgrupo"]
-            child["nodeName"] = node["name"]
-            child["fullUrl"] = _build_url(child, node["id"])
-            expanded.append(child)
-
-    print(f"Iniciando extraccion: {len(date_combinations)} días × "
-          f"{len(nodes)} nodos = {len(expanded)} consultas.")
-
-    return expanded
+    return date_combinations
 
 
 def extract_from_table(html_content):
@@ -157,8 +110,7 @@ def scrape_combinations(session, combinations, limit=None, delay=1.0):
     failures = []
 
     for i, combo in enumerate(target, start=1):
-        tag = (f"{combo.get('nodeName', combo['node_id'])} "
-               f"[{combo.get('grupo','')}] | {combo['startDay']}")
+        tag = f"{combo['date']} | {combo.get('areaName', '')}"
         print(f"[{i}/{len(target)}] {tag}", end="...")
 
         try:
@@ -172,11 +124,9 @@ def scrape_combinations(session, combinations, limit=None, delay=1.0):
 
         records = extract_from_table(response.text)
 
-        # Etiquetamos cada fila con su fecha y su ruta en la jerarquía.
+        # Etiquetamos cada fila con su fecha.
         for r in records:
             r["date"] = combo["date"]
-            for f in GROUP_FIELDS:
-                r[f] = combo.get(f, "")
 
         all_records.extend(records)
         print(f"{len(records)} registros")

@@ -4,11 +4,10 @@ from datetime import date, timedelta
 
 from scraper import (
     login, getData, scrape_combinations,
-    retry_failures, combinationsPerDay
+    retry_failures, combinationsPerDay, month_chunks
 )
-from postprocess import normalize_file, dedupe_deepest
+from postprocess import normalize_file
 from export_excel import json_to_excel
-from config import QUERY_STRATEGY
 
 TEST_MODE = False
 
@@ -91,7 +90,7 @@ def main():
             print(f"Ultimo dia cubierot: {last.isoformat()}")
 
         if start > end:
-            print("Ya esta actualizado hasta {end.isoformat()}. Nada que extraer.")
+            print(f"Ya esta actualizado hasta {end.isoformat()}. Nada que extraer.")
             finalize()
             return
 
@@ -99,31 +98,47 @@ def main():
 
     print(f"Extrayendo del {start.isoformat()} al {end.isoformat()}")
 
-    combinations = getData(session, combinationsPerDay(start, end))
-    records, failures = scrape_combinations(session, combinations)
+    all_failures = []
+    total_combos = 0
+    total_records = 0
 
-    if failures:
-        recovered, failures = retry_failures(session, failures)
-        records.extend(recovered)
+    # Se procesa y se guarda mes por mes: dentro de cada mes se sigue
+    # consultando día por día (el reporte no trae fecha por fila, así que
+    # no se puede pedir el mes completo de una sola vez sin perder el
+    # detalle diario). Guardar al terminar cada mes deja el progreso a
+    # salvo en ventas.jsonl si la ejecución se interrumpe a medio camino.
+    for month_start, month_end in month_chunks(start, end):
+        label = month_start.strftime("%Y-%m")
+        combinations = getData(session, combinationsPerDay(month_start, month_end))
+        records, failures = scrape_combinations(session, combinations)
+
+        append_jsonl(OUTPUT_FILE, records)
+
+        total_combos += len(combinations)
+        total_records += len(records)
+        all_failures.extend(failures)
+
+        completados = len(combinations) - len(failures)
+        estado = f", {len(failures)} fallidas" if failures else ""
+        print(f"[{label}] {completados}/{len(combinations)} días, "
+              f"{len(records)} registros{estado}")
+
+    if all_failures:
+        recovered, all_failures = retry_failures(session, all_failures)
+        if recovered:
+            append_jsonl(OUTPUT_FILE, recovered)
+            total_records += len(recovered)
         print(f"Recuperados en reintentos: {len(recovered)} registros")
 
-    if QUERY_STRATEGY == "all_nodes":
-        antes = len(records)
-        records = dedupe_deepest(records)
-        print(f"Dedup por profundidad: {antes} -> {len(records)} registros")
-
-    append_jsonl(OUTPUT_FILE, records)
-
-    total_combos = len(combinations)
-    completadas = total_combos - len(failures)
+    completadas = total_combos - len(all_failures)
     print(f"\nCobertura: {completadas}/{total_combos} combinaciones"
           f"({completadas / total_combos * 100: .1f}%)")
-    print(f"Nuevos registros agregados: {len(records)}")
+    print(f"Nuevos registros agregados: {total_records}")
 
-    if failures:
+    if all_failures:
         with open(FAILURES_FILE, "w", encoding="utf-8") as f:
-            json.dump(failures, f, ensure_ascii=False, indent=2)
-        print(f"Quedaron {len(failures)} sin recuperar -> {FAILURES_FILE}")
+            json.dump(all_failures, f, ensure_ascii=False, indent=2)
+        print(f"Quedaron {len(all_failures)} sin recuperar -> {FAILURES_FILE}")
 
     finalize()
 
